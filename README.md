@@ -1,36 +1,104 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# CT Lead Finder (MVP)
 
-## Getting Started
+Production-oriented MVP for Connecticut lead generation and enrichment.
 
-First, run the development server:
+## Stack
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
-```
+- Next.js (App Router) + TypeScript + Tailwind
+- Prisma + PostgreSQL
+- Docker Compose for local Postgres
+- Secure custom admin session cookie auth
+- AES-GCM encrypted provider secrets (API Hub)
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+## Features Implemented
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+- Dashboard with lead and cost cards
+- Lead management (`/leads`, `/leads/[id]`) with filters + enrich now
+- Google progressive search (`/search/google`) with pre-qual detail gating
+- CT registry search (`/search/ct-registry`) using Socrata provider config
+- PURPLE V2 bulk enrichment (`/enrich/bulk`) with 3-pass resolver ladder
+- Leads export (`/export`) and job export XLSX (`/api/jobs/export?jobId=...`)
+- API usage logging + monthly aggregation per provider + global
+- API Hub integration manager (`/api-hub`)
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+## Quick Start
 
-## Learn More
+1. `cp .env.example .env`
+2. `docker compose up -d`
+3. `npm install`
+4. `npx prisma migrate dev`
+5. `npm run dev`
 
-To learn more about Next.js, take a look at the following resources:
+Open `http://localhost:3000` and sign in with:
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+- Username: `admin`
+- Password: value from `ADMIN_PASSWORD` in `.env`
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+## API Hub Setup
 
-## Deploy on Vercel
+Go to `/api-hub`.
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+For each provider card you can:
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+- Enable/disable integration
+- Set base URL
+- Edit endpoint templates JSON
+- Save key/token secret (encrypted in DB)
+- Set rate limit + timeout + default cost
+- Test connectivity
+- Inspect last 50 calls and last error
+
+### Required fields to activate key features
+
+- Google Places:
+  - Enable provider
+  - Save Google API key in secret field
+  - Keep/adjust templates: `text_search`, `place_details`, `geocode`
+- CT Socrata:
+  - Enable provider
+  - Set `dataset_id` in endpoints JSON
+  - Optional app token in secret field
+
+If `APP_ENCRYPTION_KEY` is missing or too short, secret saves are blocked by design.
+
+## Mock Mode
+
+App works with no keys:
+
+- `MOCK_GOOGLE=true` forces deterministic mock Google responses
+- Registry search falls back to mock if dataset id is missing
+- Demo leads and provider defaults are seeded
+
+## Bulk Enrichment (PURPLE V2)
+
+Route: `/enrich/bulk`
+
+- Upload CSV/XLSX
+- Save column mapping
+- Run/resume job via `/api/jobs/run?jobId=...`
+- Polling status via `/api/jobs/status?jobId=...`
+- Export enriched workbook with `AF_` fields via `/api/jobs/export?jobId=...`
+
+Pass ladder:
+
+1. Google resolver (details call gated by pre-qual score >= 65)
+2. Website extraction (robots.txt check + 1 req/domain/sec)
+3. Directory placeholder + RDAP/generic enrichment hints
+
+## Security Notes
+
+- Provider secrets encrypted using AES-256-GCM and `APP_ENCRYPTION_KEY`
+- Secrets are never logged
+- Session cookie is HTTP-only, signed with HMAC
+- Input validation via Zod
+- Upload file type/size checks
+- Spreadsheet export sanitizes formula-injection vectors
+
+## Handy Commands
+
+- `npm run dev`
+- `npm run lint`
+- `npm run db:generate`
+- `npm run db:migrate`
+- `npm run db:seed`
+

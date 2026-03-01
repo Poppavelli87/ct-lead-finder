@@ -1,0 +1,178 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum LeadSource {
+  GOOGLE
+  CT_REGISTRY
+  UPLOAD
+  MANUAL
+  DIRECTORY
+  MOCK
+}
+
+enum JobStatus {
+  PENDING
+  RUNNING
+  COMPLETED
+  FAILED
+}
+
+enum JobRowStatus {
+  PENDING
+  PROCESSING
+  ENRICHED
+  FAILED
+  SKIPPED
+}
+
+model User {
+  id           String   @id @default(cuid())
+  username     String   @unique
+  passwordHash String
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+}
+
+model Provider {
+  id                 String         @id @default(cuid())
+  name               String
+  slug               String         @unique
+  enabled            Boolean        @default(false)
+  baseUrl            String
+  endpoints          Json
+  secretEncrypted    String?
+  rateLimitPerSec    Int            @default(5)
+  timeoutMs          Int            @default(10000)
+  defaultCostPerCall Decimal        @default(0) @db.Decimal(10, 4)
+  lastError          String?        @db.Text
+  lastErrorAt        DateTime?
+  lastSuccessAt      DateTime?
+  createdAt          DateTime       @default(now())
+  updatedAt          DateTime       @updatedAt
+  apiUsage           ApiUsage[]
+  monthlyUsage       MonthlyUsage[]
+
+  @@index([slug])
+  @@index([enabled])
+}
+
+model Lead {
+  id                 String     @id @default(cuid())
+  source             LeadSource @default(MANUAL)
+  externalId         String?
+  name               String
+  industryType       String?
+  phone              String?
+  email              String?
+  website            String?
+  domain             String?
+  ownerName          String?
+  socialLinks        Json?
+  address1           String?
+  city               String?
+  county             String?
+  state              String?
+  zip                String?
+  qualified          Boolean    @default(false)
+  qualificationScore Int        @default(0)
+  preQualScore       Int?
+  notes              String?    @db.Text
+  createdAt          DateTime   @default(now())
+  updatedAt          DateTime   @updatedAt
+  lastEnrichedAt     DateTime?
+  apiUsage           ApiUsage[]
+  jobRows            JobRow[]
+
+  @@index([name])
+  @@index([city])
+  @@index([county])
+  @@index([source])
+  @@index([qualified])
+  @@index([createdAt])
+}
+
+model EnrichmentJob {
+  id             String     @id @default(cuid())
+  status         JobStatus  @default(PENDING)
+  sourceFilename String?
+  sourceHeaders  Json?
+  mapping        Json?
+  totalRows      Int        @default(0)
+  processedRows  Int        @default(0)
+  successRows    Int        @default(0)
+  failedRows     Int        @default(0)
+  lastError      String?    @db.Text
+  createdAt      DateTime   @default(now())
+  updatedAt      DateTime   @updatedAt
+  startedAt      DateTime?
+  finishedAt     DateTime?
+  rows           JobRow[]
+  apiUsage       ApiUsage[]
+
+  @@index([status])
+  @@index([createdAt])
+}
+
+model JobRow {
+  id           String        @id @default(cuid())
+  jobId        String
+  rowIndex     Int
+  status       JobRowStatus  @default(PENDING)
+  originalData Json
+  pass1Data    Json?
+  pass2Data    Json?
+  pass3Data    Json?
+  finalData    Json?
+  error        String?       @db.Text
+  leadId       String?
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+  job          EnrichmentJob @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  lead         Lead?         @relation(fields: [leadId], references: [id], onDelete: SetNull)
+
+  @@unique([jobId, rowIndex])
+  @@index([status])
+}
+
+model ApiUsage {
+  id           String         @id @default(cuid())
+  providerId   String
+  endpointKey  String
+  timestamp    DateTime       @default(now())
+  costUsd      Decimal        @default(0) @db.Decimal(10, 4)
+  isMock       Boolean        @default(false)
+  requestHash  String?
+  jobId        String?
+  leadId       String?
+  statusCode   Int?
+  durationMs   Int?
+  errorMessage String?        @db.Text
+  provider     Provider       @relation(fields: [providerId], references: [id], onDelete: Cascade)
+  job          EnrichmentJob? @relation(fields: [jobId], references: [id], onDelete: SetNull)
+  lead         Lead?          @relation(fields: [leadId], references: [id], onDelete: SetNull)
+
+  @@index([providerId, timestamp])
+  @@index([jobId])
+  @@index([leadId])
+}
+
+model MonthlyUsage {
+  id           String    @id @default(cuid())
+  providerId   String?
+  month        String
+  requestCount Int       @default(0)
+  costUsd      Decimal   @default(0) @db.Decimal(12, 4)
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+  provider     Provider? @relation(fields: [providerId], references: [id], onDelete: SetNull)
+
+  @@unique([providerId, month])
+  @@index([month])
+}
+
