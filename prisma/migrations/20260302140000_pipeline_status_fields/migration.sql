@@ -1,0 +1,11 @@
+ALTER TABLE "Lead"
+ADD COLUMN IF NOT EXISTS "matchStatus" TEXT,
+ADD COLUMN IF NOT EXISTS "matchAttemptedAt" TIMESTAMP(3),
+ADD COLUMN IF NOT EXISTS "matchConfidence" INTEGER,
+ADD COLUMN IF NOT EXISTS "matchError" TEXT,
+ADD COLUMN IF NOT EXISTS "phoneStatus" TEXT,
+ADD COLUMN IF NOT EXISTS "phoneAttemptedAt" TIMESTAMP(3),
+ADD COLUMN IF NOT EXISTS "phoneError" TEXT;
+
+CREATE INDEX IF NOT EXISTS "Lead_matchStatus_idx" ON "Lead"("matchStatus");
+CREATE INDEX IF NOT EXISTS "Lead_phoneStatus_idx" ON "Lead"("phoneStatus");

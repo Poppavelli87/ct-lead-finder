@@ -1,11 +1,10 @@
-import { getProviderBySlug, providerRequest } from "./request";
+import { getProviderBySlug, ProviderRequestError, providerRequest } from "./request";
 import { PROVIDER_SLUGS } from "./constants";
 
 export type GeocodeResult = {
   lat: number;
   lon: number;
   displayName: string;
-  isMock: boolean;
 };
 
 type NominatimItem = {
@@ -20,12 +19,12 @@ export async function nominatimGeocode(query: string): Promise<GeocodeResult | n
   const userAgent = typeof endpoints.user_agent === "string" ? endpoints.user_agent : "CTLeadFinder/1.0";
 
   if (!provider.enabled) {
-    return {
-      lat: 41.7637,
-      lon: -72.6851,
-      displayName: "Hartford, Connecticut",
-      isMock: true,
-    };
+    throw new ProviderRequestError({
+      code: "PROVIDER_NOT_CONFIGURED",
+      provider: PROVIDER_SLUGS.NOMINATIM,
+      statusCode: 500,
+      message: "Nominatim provider is disabled in API Hub.",
+    });
   }
 
   const response = await providerRequest<NominatimItem[]>({
@@ -50,7 +49,6 @@ export async function nominatimGeocode(query: string): Promise<GeocodeResult | n
     lat: Number(item.lat),
     lon: Number(item.lon),
     displayName: item.display_name,
-    isMock: response.isMock,
   };
 }
 

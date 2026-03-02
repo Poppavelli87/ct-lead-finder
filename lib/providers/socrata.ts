@@ -1,6 +1,6 @@
 import { subMonths } from "date-fns";
 import { dedupeAndSaveLead } from "../dedupe";
-import { getProviderBySlug, getProviderSecret, providerRequest } from "./request";
+import { getProviderBySlug, getProviderSecret, ProviderRequestError, providerRequest } from "./request";
 import { PROVIDER_SLUGS } from "./constants";
 
 export type CtRegistryFilters = {
@@ -15,17 +15,6 @@ export type CtRegistryFilters = {
 
 function formatDate(date: Date): string {
   return date.toISOString().slice(0, 10);
-}
-
-function mockRegistryRows(filters: CtRegistryFilters) {
-  const seedName = filters.nameContains || "CT Business";
-  return Array.from({ length: 20 }).map((_, idx) => ({
-    accountnumber: `mock-reg-${idx}`,
-    name: `${seedName} ${idx + 1}`,
-    status: "ACTIVE",
-    create_dt: formatDate(subMonths(new Date(), idx % 8)),
-    mailing_address: `${120 + idx} Oak Street, Hartford, CT 06103`,
-  }));
 }
 
 function endpointWithDataset(endpoints: Record<string, unknown>, datasetId: string): string {
@@ -48,6 +37,14 @@ function valueFromRow(row: Record<string, unknown>, keys: string[]): string | nu
 
 export async function searchCtRegistry(filters: CtRegistryFilters) {
   const provider = await getProviderBySlug(PROVIDER_SLUGS.SOCRATA);
+  if (!provider.enabled) {
+    throw new ProviderRequestError({
+      code: "PROVIDER_NOT_CONFIGURED",
+      provider: PROVIDER_SLUGS.SOCRATA,
+      statusCode: 500,
+      message: "Socrata provider is disabled in API Hub.",
+    });
+  }
   const endpoints = (provider.endpoints ?? {}) as Record<string, unknown>;
   const rawDatasetId =
     typeof endpoints.dataset_id === "string"
@@ -56,6 +53,14 @@ export async function searchCtRegistry(filters: CtRegistryFilters) {
         ? endpoints.datasetId
         : "";
   const datasetId = rawDatasetId.trim();
+  if (!datasetId) {
+    throw new ProviderRequestError({
+      code: "PROVIDER_NOT_CONFIGURED",
+      provider: PROVIDER_SLUGS.SOCRATA,
+      statusCode: 500,
+      message: "Socrata dataset_id is missing in API Hub.",
+    });
+  }
   const appToken = await getProviderSecret(PROVIDER_SLUGS.SOCRATA);
 
   const effectiveLimit = Math.max(10, Math.min(filters.limit ?? 100, 500));
@@ -78,13 +83,9 @@ export async function searchCtRegistry(filters: CtRegistryFilters) {
     whereClauses.push(`create_dt <= '${filters.filingDateTo}'`);
   }
 
-  const shouldMock = !provider.enabled || !datasetId;
-
   const response = await providerRequest<Record<string, unknown>[]>({
     slug: PROVIDER_SLUGS.SOCRATA,
-    endpointKey: shouldMock ? "query" : endpointWithDataset(endpoints, datasetId),
-    forceMock: shouldMock,
-    mockResponse: mockRegistryRows(filters),
+    endpointKey: endpointWithDataset(endpoints, datasetId),
     query: {
       $limit: effectiveLimit,
       $where: whereClauses.length ? whereClauses.join(" AND ") : undefined,
@@ -119,7 +120,6 @@ export async function searchCtRegistry(filters: CtRegistryFilters) {
   return {
     rows,
     leads,
-    isMock: response.isMock,
   };
 }
 

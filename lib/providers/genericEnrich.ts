@@ -5,7 +5,6 @@ export type GenericEnrichResult = {
   ownerName?: string | null;
   socialLinks?: Record<string, string> | null;
   raw: unknown;
-  isMock: boolean;
 };
 
 export async function enrichCompanyByDomain(domain: string): Promise<GenericEnrichResult | null> {
@@ -49,7 +48,6 @@ export async function enrichCompanyByDomain(domain: string): Promise<GenericEnri
           : null,
     socialLinks,
     raw: data,
-    isMock: response.isMock,
   };
 }
 

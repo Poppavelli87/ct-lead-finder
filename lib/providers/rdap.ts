@@ -1,29 +1,27 @@
-import { getProviderBySlug, providerRequest } from "./request";
+import { getProviderBySlug, ProviderRequestError, providerRequest } from "./request";
 import { PROVIDER_SLUGS } from "./constants";
 
 export type RdapHint = {
   registrar: string | null;
   createdDate: string | null;
   raw: unknown;
-  isMock: boolean;
 };
 
 export async function lookupRdapDomain(domain: string): Promise<RdapHint | null> {
   const provider = await getProviderBySlug(PROVIDER_SLUGS.RDAP);
   if (!provider.enabled) {
-    return {
-      registrar: "Mock Registrar",
-      createdDate: "2020-01-01T00:00:00Z",
-      raw: { mock: true },
-      isMock: true,
-    };
+    throw new ProviderRequestError({
+      code: "PROVIDER_NOT_CONFIGURED",
+      provider: PROVIDER_SLUGS.RDAP,
+      statusCode: 500,
+      message: "RDAP provider is disabled in API Hub.",
+    });
   }
 
   const response = await providerRequest<Record<string, unknown>>({
     slug: PROVIDER_SLUGS.RDAP,
     endpointKey: "domain_lookup",
     pathParams: { domain },
-    forceMock: false,
   });
 
   const entities = Array.isArray(response.data?.entities)
@@ -59,7 +57,6 @@ export async function lookupRdapDomain(domain: string): Promise<RdapHint | null>
     registrar,
     createdDate: typeof createdEvent?.eventDate === "string" ? createdEvent.eventDate : null,
     raw: response.data,
-    isMock: response.isMock,
   };
 }
 

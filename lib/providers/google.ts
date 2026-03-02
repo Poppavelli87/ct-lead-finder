@@ -1,36 +1,65 @@
+import { Lead } from "@prisma/client";
+import { db } from "../db";
 import { dedupeAndSaveLead } from "../dedupe";
-import { isMockGoogleEnabled } from "../env";
 import { isMasterDuplicate } from "../master-dedupe";
+import { computeQualificationScore, isQualifiedLead } from "../qualification";
 import { computePreQualScore } from "../scoring";
-import { domainFromWebsite } from "../utils";
 import { progressiveCountyOrder } from "../ct-counties";
-import { getProviderBySlug, getProviderSecret, providerRequest } from "./request";
+import { RequestRateLimiter } from "../request-rate-limiter";
+import { domainFromWebsite } from "../utils";
 import { PROVIDER_SLUGS } from "./constants";
-import { nominatimGeocode } from "./nominatim";
+import { getProviderBySlug, getProviderSecret, ProviderRequestError, providerRequest } from "./request";
 
 type LeadRecord = Record<string, any>;
 
-type GoogleTextSearchResult = {
-  place_id: string;
-  name: string;
-  formatted_address?: string;
-  business_status?: string;
+type GooglePlacePhoneResponse = {
+  nationalPhoneNumber?: string;
+  internationalPhoneNumber?: string;
 };
 
-type GoogleTextSearchResponse = {
-  results: GoogleTextSearchResult[];
-  status: string;
+type GooglePlaceProfileResponse = {
+  displayName?: { text?: string };
+  formattedAddress?: string;
+  nationalPhoneNumber?: string;
+  internationalPhoneNumber?: string;
+  websiteUri?: string;
 };
 
-type GoogleDetailsResponse = {
-  result?: {
+type GoogleTextSearchNewResponse = {
+  places?: Array<{
+    id?: string;
     name?: string;
-    formatted_address?: string;
-    formatted_phone_number?: string;
-    website?: string;
-    address_components?: Array<{ long_name: string; short_name: string; types: string[] }>;
-    url?: string;
-  };
+    formattedAddress?: string;
+    displayName?: { text?: string };
+  }>;
+};
+
+export type GooglePlaceCandidate = {
+  placeId: string;
+  formattedAddress: string | null;
+  displayName: string | null;
+  city: string | null;
+  state: string | null;
+};
+
+export type PhoneEnrichmentResult = {
+  status: "updated" | "skipped" | "failed";
+  reason?: string;
+  phone?: string | null;
+  lead?: LeadRecord;
+};
+
+type GoogleRequestOptions = {
+  limiter?: RequestRateLimiter;
+  leadId?: string;
+  jobId?: string;
+};
+
+type GooglePlaceProfile = {
+  name: string | null;
+  formattedAddress: string | null;
+  phone: string | null;
+  website: string | null;
 };
 
 function splitAddress(address?: string): { address1: string | null; city: string | null; state: string | null; zip: string | null } {
@@ -52,114 +81,201 @@ function splitAddress(address?: string): { address1: string | null; city: string
   };
 }
 
-function deterministicNumber(seed: string): number {
-  let hash = 0;
-  for (let i = 0; i < seed.length; i++) {
-    hash = (hash * 31 + seed.charCodeAt(i)) >>> 0;
-  }
-  return hash;
+function truncateError(value: string | null | undefined): string | null {
+  if (!value) return null;
+  return value.slice(0, 2000);
 }
 
-function buildMockGoogleResults(query: string, count: number): GoogleTextSearchResponse {
-  const safeCount = Math.max(5, Math.min(30, count));
-  const results = Array.from({ length: safeCount }).map((_, idx) => {
-    const seed = deterministicNumber(`${query}-${idx}`);
-    const streetNo = 100 + (seed % 900);
-    const cityList = ["Hartford", "New Haven", "Stamford", "Norwalk", "Bridgeport", "Waterbury"];
-    const city = cityList[seed % cityList.length];
-    return {
-      place_id: `mock_${seed}`,
-      name: `${query.split(" in ")[0]} ${idx + 1}`,
-      formatted_address: `${streetNo} Main St, ${city}, CT ${(6000 + (seed % 999)).toString().padStart(5, "0")}`,
-      business_status: "OPERATIONAL",
-    };
-  });
-
-  return {
-    status: "OK",
-    results,
-  };
+function resolvePlaceIdFromLead(lead: LeadRecord): string | null {
+  const candidate = lead.externalId ?? lead.place_id ?? lead.placeId ?? null;
+  if (!candidate) return null;
+  const text = String(candidate).trim();
+  return text || null;
 }
 
-function buildMockDetails(placeId: string): GoogleDetailsResponse {
-  const seed = deterministicNumber(placeId);
-  const phone = `(203) ${String(200 + (seed % 700)).padStart(3, "0")}-${String(1000 + (seed % 9000)).padStart(4, "0")}`;
-  const domain = `business-${seed % 1000}.example.com`;
+function parseCityStateFromFormattedAddress(formattedAddress?: string | null): { city: string | null; state: string | null } {
+  if (!formattedAddress) return { city: null, state: null };
+  const parts = formattedAddress
+    .split(",")
+    .map((part) => part.trim())
+    .filter(Boolean);
 
-  return {
-    result: {
-      formatted_phone_number: phone,
-      website: `https://${domain}`,
-    },
-  };
+  const city = parts.length >= 2 ? parts[parts.length - 2] : null;
+  const stateZip = parts.length >= 1 ? parts[parts.length - 1] : "";
+  const stateMatch = stateZip.match(/\b([A-Z]{2})\b/);
+  const state = stateMatch ? stateMatch[1] : null;
+
+  return { city, state };
 }
 
-async function resolveGoogleMode() {
+function extractPlaceId(place: { id?: string; name?: string }): string | null {
+  const direct = String(place.id ?? "").trim();
+  if (direct) return direct;
+  const resource = String(place.name ?? "").trim();
+  if (!resource) return null;
+  const last = resource.split("/").filter(Boolean).pop() ?? "";
+  return last || null;
+}
+
+async function requireGoogleConfig(): Promise<{ key: string; provider: any }> {
   const provider = await getProviderBySlug(PROVIDER_SLUGS.GOOGLE);
-  const key = await getProviderSecret(PROVIDER_SLUGS.GOOGLE);
-  const forcedMock = isMockGoogleEnabled();
-  const usable = provider.enabled && Boolean(key) && !forcedMock;
+  if (!provider.enabled) {
+    throw new ProviderRequestError({
+      code: "PROVIDER_NOT_CONFIGURED",
+      provider: PROVIDER_SLUGS.GOOGLE,
+      statusCode: 500,
+      message: "Google Places provider is not configured in API Hub.",
+    });
+  }
 
+  const key = (await getProviderSecret(PROVIDER_SLUGS.GOOGLE))?.trim();
+  if (!key) {
+    throw new ProviderRequestError({
+      code: "PROVIDER_NOT_CONFIGURED",
+      provider: PROVIDER_SLUGS.GOOGLE,
+      statusCode: 500,
+      message: "Google Places provider is not configured in API Hub.",
+    });
+  }
+
+  return { key, provider };
+}
+
+async function fetchPlaceProfileFromPlaceId(
+  placeId: string,
+  apiKey: string,
+  options?: GoogleRequestOptions,
+): Promise<GooglePlaceProfile> {
+  const cleanPlaceId = String(placeId ?? "").trim();
+  if (!cleanPlaceId) {
+    throw new Error("Missing placeId for place profile lookup.");
+  }
+
+  const cleanApiKey = String(apiKey ?? "").trim();
+  if (!cleanApiKey) {
+    throw new Error("Missing Google API key.");
+  }
+
+  if (options?.limiter) {
+    await options.limiter.wait();
+  }
+
+  const response = await providerRequest<GooglePlaceProfileResponse>({
+    slug: PROVIDER_SLUGS.GOOGLE,
+    endpointKey: "place_phone_details",
+    pathParams: { placeId: cleanPlaceId },
+    headers: {
+      "X-Goog-Api-Key": cleanApiKey,
+      "X-Goog-FieldMask": "displayName,formattedAddress,nationalPhoneNumber,internationalPhoneNumber,websiteUri",
+    },
+    leadId: options?.leadId,
+    jobId: options?.jobId,
+  });
+
+  const data = response.data ?? {};
+  const phone = data.internationalPhoneNumber ?? data.nationalPhoneNumber ?? null;
   return {
-    provider,
-    key,
-    isMock: !usable,
+    name: data.displayName?.text ?? null,
+    formattedAddress: data.formattedAddress ?? null,
+    phone,
+    website: data.websiteUri ?? null,
   };
 }
 
-async function googleTextSearch(query: string, jobId?: string, leadId?: string, targetCount = 20) {
-  const mode = await resolveGoogleMode();
+export async function searchPlaceCandidatesNew(args: {
+  query: string;
+  apiKey: string;
+  pageSize?: number;
+  limiter?: RequestRateLimiter;
+  leadId?: string;
+  jobId?: string;
+}): Promise<GooglePlaceCandidate[]> {
+  const query = String(args.query ?? "").trim();
+  if (!query) return [];
 
-  if (mode.isMock) {
-    return providerRequest<GoogleTextSearchResponse>({
-      slug: PROVIDER_SLUGS.GOOGLE,
-      endpointKey: "text_search",
-      forceMock: true,
-      mockResponse: buildMockGoogleResults(query, targetCount),
-      query: { query },
-      jobId,
-      leadId,
+  const apiKey = String(args.apiKey ?? "").trim();
+  if (!apiKey) {
+    throw new ProviderRequestError({
+      code: "PROVIDER_NOT_CONFIGURED",
+      provider: PROVIDER_SLUGS.GOOGLE,
+      statusCode: 500,
+      message: "Google Places provider is not configured in API Hub.",
     });
   }
 
-  return providerRequest<GoogleTextSearchResponse>({
+  if (args.limiter) {
+    await args.limiter.wait();
+  }
+
+  const response = await providerRequest<GoogleTextSearchNewResponse>({
     slug: PROVIDER_SLUGS.GOOGLE,
-    endpointKey: "text_search",
-    query: {
-      query,
-      key: mode.key ?? "",
+    endpointKey: "text_search_new",
+    method: "POST",
+    body: {
+      textQuery: query,
+      pageSize: Math.max(1, Math.min(5, Math.floor(args.pageSize ?? 5))),
+      languageCode: "en",
     },
-    jobId,
-    leadId,
+    headers: {
+      "X-Goog-Api-Key": apiKey,
+      "X-Goog-FieldMask": "places.id,places.name,places.displayName,places.formattedAddress",
+    },
+    leadId: args.leadId,
+    jobId: args.jobId,
   });
+
+  return (response.data.places ?? [])
+    .map((place) => {
+      const placeId = extractPlaceId(place);
+      if (!placeId) return null;
+      const formattedAddress = place.formattedAddress ?? null;
+      const parsed = parseCityStateFromFormattedAddress(formattedAddress);
+
+      return {
+        placeId,
+        formattedAddress,
+        displayName: place.displayName?.text ?? null,
+        city: parsed.city,
+        state: parsed.state,
+      } satisfies GooglePlaceCandidate;
+    })
+    .filter((item): item is GooglePlaceCandidate => Boolean(item));
 }
 
-async function googlePlaceDetails(placeId: string, jobId?: string, leadId?: string) {
-  const mode = await resolveGoogleMode();
-
-  if (mode.isMock) {
-    return providerRequest<GoogleDetailsResponse>({
-      slug: PROVIDER_SLUGS.GOOGLE,
-      endpointKey: "place_details",
-      forceMock: true,
-      query: { place_id: placeId },
-      mockResponse: buildMockDetails(placeId),
-      jobId,
-      leadId,
-    });
+export async function fetchPhoneFromPlaceId(
+  placeId: string,
+  apiKey: string,
+  options?: GoogleRequestOptions,
+): Promise<{ phone: string | null }> {
+  const cleanPlaceId = String(placeId ?? "").trim();
+  if (!cleanPlaceId) {
+    throw new Error("Missing placeId for phone lookup.");
   }
 
-  return providerRequest<GoogleDetailsResponse>({
+  const cleanApiKey = String(apiKey ?? "").trim();
+  if (!cleanApiKey) {
+    throw new Error("Missing Google API key.");
+  }
+
+  if (options?.limiter) {
+    await options.limiter.wait();
+  }
+
+  const response = await providerRequest<GooglePlacePhoneResponse>({
     slug: PROVIDER_SLUGS.GOOGLE,
-    endpointKey: "place_details",
-    query: {
-      place_id: placeId,
-      fields: "name,formatted_address,formatted_phone_number,website,address_component,url",
-      key: mode.key ?? "",
+    endpointKey: "place_phone_details",
+    pathParams: { placeId: cleanPlaceId },
+    headers: {
+      "X-Goog-Api-Key": cleanApiKey,
+      "X-Goog-FieldMask": "nationalPhoneNumber,internationalPhoneNumber",
     },
-    jobId,
-    leadId,
+    leadId: options?.leadId,
+    jobId: options?.jobId,
   });
+
+  const data = response.data ?? {};
+  const phone = data.internationalPhoneNumber ?? data.nationalPhoneNumber ?? null;
+  return { phone };
 }
 
 export type GoogleSearchInput = {
@@ -177,7 +293,7 @@ export async function runGoogleProgressiveSearch(input: GoogleSearchInput): Prom
   skippedForMasterDedupe: number;
   searchedLocations: string[];
 }> {
-  const mode = await resolveGoogleMode();
+  const config = await requireGoogleConfig();
   const target = Math.max(1, input.targetCount || 100);
   const locationSeed = input.zip || input.city || input.county || "Connecticut";
 
@@ -191,31 +307,35 @@ export async function runGoogleProgressiveSearch(input: GoogleSearchInput): Prom
 
   for (const location of locations) {
     if (saved.length >= target) break;
-    let locationText = location;
-    if (mode.isMock) {
-      const geocoded = await nominatimGeocode(location);
-      if (geocoded?.displayName) {
-        locationText = geocoded.displayName;
-      }
-    }
-    const query = `${input.businessType} in ${locationText}`;
-    const textSearch = await googleTextSearch(query, undefined, undefined, Math.min(20, target));
+    const query = `${input.businessType} in ${location}`;
+    const candidates = await searchPlaceCandidatesNew({
+      query,
+      apiKey: config.key,
+      pageSize: Math.min(5, Math.max(1, target - saved.length)),
+    });
 
-    for (const candidate of textSearch.data.results ?? []) {
+    for (const candidate of candidates) {
       if (saved.length >= target) break;
 
+      const profile = await fetchPlaceProfileFromPlaceId(candidate.placeId, config.key);
+      const name = profile.name || candidate.displayName || input.businessType;
+      const formattedAddress = profile.formattedAddress || candidate.formattedAddress;
+
       const preQual = computePreQualScore({
-        name: candidate.name,
-        formatted_address: candidate.formatted_address,
-        business_status: candidate.business_status,
+        name,
+        formatted_address: formattedAddress,
+        phone: profile.phone,
+        website: profile.website,
+        business_status: "OPERATIONAL",
       });
 
       if (preQual < 65) {
         skippedForLowPrequal += 1;
         continue;
       }
+
       const existsInMaster = await isMasterDuplicate({
-        name: candidate.name,
+        name,
       });
 
       if (existsInMaster) {
@@ -223,16 +343,14 @@ export async function runGoogleProgressiveSearch(input: GoogleSearchInput): Prom
         continue;
       }
 
-      const details = await googlePlaceDetails(candidate.place_id);
-      const detail = details.data.result ?? {};
-      const address = splitAddress(detail.formatted_address ?? candidate.formatted_address ?? undefined);
+      const address = splitAddress(formattedAddress ?? undefined);
 
       const lead = await dedupeAndSaveLead({
         source: "GOOGLE",
-        externalId: candidate.place_id,
-        name: detail.name || candidate.name,
-        phone: detail.formatted_phone_number,
-        website: detail.website,
+        externalId: candidate.placeId,
+        name,
+        phone: profile.phone,
+        website: profile.website,
         address1: address.address1,
         city: address.city,
         state: address.state ?? "CT",
@@ -254,58 +372,126 @@ export async function runGoogleProgressiveSearch(input: GoogleSearchInput): Prom
   };
 }
 
-export async function enrichLeadWithGoogle(lead: LeadRecord, jobId?: string): Promise<LeadRecord> {
-  const existsInMaster = await isMasterDuplicate({
-    name: lead.name,
-    phone: lead.phone,
-    website: lead.website,
-  });
-
-  if (existsInMaster) {
-    return lead;
+export async function enrichLeadPhoneOnlyWithGoogle(
+  lead: Lead | LeadRecord,
+  options?: { apiKey?: string | null; providerEnabled?: boolean; limiter?: RequestRateLimiter },
+): Promise<PhoneEnrichmentResult> {
+  if ((lead.phone ?? "").trim()) {
+    return { status: "skipped", reason: "already_has_phone", lead };
   }
 
-  const locationText = [lead.city, lead.state, lead.zip].filter(Boolean).join(" ");
-  const query = `${lead.name} ${locationText}`.trim();
-
-  const text = await googleTextSearch(query, jobId, lead.id, 10);
-  const candidate = text.data.results?.[0];
-  if (!candidate) {
-    return lead;
+  const placeId = resolvePlaceIdFromLead(lead);
+  if (!placeId) {
+    if (lead.id) {
+      await db.lead.update({
+        where: { id: lead.id },
+        data: {
+          phoneStatus: "FAILED",
+          phoneAttemptedAt: new Date(),
+          phoneError: "missing_place_id",
+        },
+      });
+    }
+    return { status: "skipped", reason: "missing_place_id", lead };
   }
 
-  const preQual = computePreQualScore({
-    name: candidate.name,
-    formatted_address: candidate.formatted_address,
-    business_status: candidate.business_status,
-  });
+  const providerEnabled =
+    typeof options?.providerEnabled === "boolean"
+      ? options.providerEnabled
+      : Boolean((await getProviderBySlug(PROVIDER_SLUGS.GOOGLE)).enabled);
 
-  if (preQual < 65) {
-    return lead;
+  if (!providerEnabled) {
+    throw new ProviderRequestError({
+      code: "PROVIDER_NOT_CONFIGURED",
+      provider: PROVIDER_SLUGS.GOOGLE,
+      statusCode: 500,
+      message: "Google Places provider is not configured in API Hub.",
+    });
   }
 
-  const details = await googlePlaceDetails(candidate.place_id, jobId, lead.id);
-  const detail = details.data.result ?? {};
-  const addr = splitAddress(detail.formatted_address ?? candidate.formatted_address ?? undefined);
+  const apiKey = options?.apiKey?.trim() || (await getProviderSecret(PROVIDER_SLUGS.GOOGLE))?.trim();
+  if (!apiKey) {
+    throw new ProviderRequestError({
+      code: "PROVIDER_NOT_CONFIGURED",
+      provider: PROVIDER_SLUGS.GOOGLE,
+      statusCode: 500,
+      message: "Google Places provider is not configured in API Hub.",
+    });
+  }
 
-  return dedupeAndSaveLead({
-    source: lead.source,
-    externalId: lead.externalId ?? candidate.place_id,
-    name: detail.name || lead.name,
-    industryType: lead.industryType,
-    phone: detail.formatted_phone_number || lead.phone,
-    email: lead.email,
-    website: detail.website || lead.website,
-    ownerName: lead.ownerName,
-    socialLinks: lead.socialLinks,
-    address1: addr.address1 || lead.address1,
-    city: addr.city || lead.city,
-    county: lead.county,
-    state: addr.state || lead.state || "CT",
-    zip: addr.zip || lead.zip,
-    notes: lead.notes,
-    preQualScore: preQual,
-  });
+  try {
+    const { phone } = await fetchPhoneFromPlaceId(placeId, apiKey, {
+      limiter: options?.limiter,
+      leadId: lead.id,
+    });
+
+    if (!phone) {
+      if (lead.id) {
+        await db.lead.update({
+          where: { id: lead.id },
+          data: {
+            phoneStatus: "NO_PHONE",
+            phoneAttemptedAt: new Date(),
+            phoneError: null,
+          },
+        });
+      }
+
+      return { status: "skipped", reason: "phone_not_found", phone: null, lead };
+    }
+
+    const nextLead = {
+      ...lead,
+      phone,
+    };
+
+    const updatedLead = await db.lead.update({
+      where: { id: lead.id },
+      data: {
+        phone,
+        phoneStatus: "FOUND",
+        phoneAttemptedAt: new Date(),
+        phoneError: null,
+        qualificationScore: computeQualificationScore(nextLead),
+        qualified: isQualifiedLead(nextLead),
+        lastEnrichedAt: new Date(),
+      },
+    });
+
+    return {
+      status: "updated",
+      phone,
+      lead: updatedLead,
+    };
+  } catch (error) {
+    if (lead.id) {
+      await db.lead.update({
+        where: { id: lead.id },
+        data: {
+          phoneStatus: "FAILED",
+          phoneAttemptedAt: new Date(),
+          phoneError: truncateError(error instanceof Error ? error.message : "google_request_failed"),
+        },
+      });
+    }
+
+    if (error instanceof ProviderRequestError && error.upstreamStatus === 429) {
+      return { status: "failed", reason: "rate_limited", lead };
+    }
+    if (error instanceof ProviderRequestError && error.code === "PROVIDER_NOT_CONFIGURED") {
+      return { status: "failed", reason: "provider_not_configured", lead };
+    }
+    return { status: "failed", reason: "google_request_failed", lead };
+  }
+}
+
+export async function enrichLeadWithGoogle(lead: LeadRecord, _jobId?: string): Promise<LeadRecord> {
+  void _jobId;
+  const outcome = await enrichLeadPhoneOnlyWithGoogle(lead);
+  if (outcome.status === "updated" && outcome.lead) {
+    return outcome.lead;
+  }
+  return lead;
 }
 
 export async function googleResolverFromName(name: string, city?: string | null, county?: string | null, jobId?: string) {
@@ -315,30 +501,40 @@ export async function googleResolverFromName(name: string, city?: string | null,
   }
 
   const query = `${name} ${city ?? ""} CT`.trim();
-  const text = await googleTextSearch(query, jobId, undefined, 5);
-  const candidate = text.data.results?.[0];
+  const config = await requireGoogleConfig();
+  const candidates = await searchPlaceCandidatesNew({
+    query,
+    apiKey: config.key,
+    pageSize: 5,
+    jobId,
+  });
+  const candidate = candidates[0];
   if (!candidate) return null;
 
+  const profile = await fetchPlaceProfileFromPlaceId(candidate.placeId, config.key, { jobId });
+  const resolvedName = profile.name || candidate.displayName || name;
+  const formattedAddress = profile.formattedAddress || candidate.formattedAddress;
+
   const preQual = computePreQualScore({
-    name: candidate.name,
-    formatted_address: candidate.formatted_address,
-    business_status: candidate.business_status,
+    name: resolvedName,
+    formatted_address: formattedAddress,
+    phone: profile.phone,
+    website: profile.website,
+    business_status: "OPERATIONAL",
   });
 
   if (preQual < 65) {
     return null;
   }
 
-  const details = await googlePlaceDetails(candidate.place_id, jobId);
-  const detail = details.data.result ?? {};
-  const addr = splitAddress(detail.formatted_address ?? candidate.formatted_address ?? undefined);
+  const addr = splitAddress(formattedAddress ?? undefined);
 
   return dedupeAndSaveLead({
     source: "UPLOAD",
-    externalId: candidate.place_id,
-    name: detail.name || candidate.name,
-    phone: detail.formatted_phone_number,
-    website: detail.website,
+    externalId: candidate.placeId,
+    name: resolvedName,
+    phone: profile.phone,
+    website: profile.website,
     address1: addr.address1,
     city: addr.city || city,
     county: county ?? undefined,
@@ -351,4 +547,3 @@ export async function googleResolverFromName(name: string, city?: string | null,
 export function inferDomain(lead: LeadRecord): string | null {
   return lead.domain || domainFromWebsite(lead.website);
 }
-
