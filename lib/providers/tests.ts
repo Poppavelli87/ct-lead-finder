@@ -1,11 +1,11 @@
 import { ProviderSlug, PROVIDER_SLUGS } from "./constants";
 import { providerRequest } from "./request";
 import { getProviderBySlug, getProviderSecret } from "./request";
+import { fetchPhoneFromPlaceId } from "./google";
 
 export async function runProviderConnectivityTest(slug: ProviderSlug): Promise<{
   ok: boolean;
   message: string;
-  isMock: boolean;
   statusCode?: number;
 }> {
   const provider = await getProviderBySlug(slug);
@@ -14,27 +14,26 @@ export async function runProviderConnectivityTest(slug: ProviderSlug): Promise<{
     return {
       ok: false,
       message: "Provider is disabled in API Hub.",
-      isMock: true,
+      statusCode: 500,
     };
   }
 
   try {
     if (slug === PROVIDER_SLUGS.GOOGLE) {
       const key = await getProviderSecret(slug);
-      const response = await providerRequest<{ status?: string }>({
-        slug,
-        endpointKey: "text_search",
-        query: {
-          query: "coffee in Hartford, Connecticut",
-          key: key ?? "",
-        },
-      });
+      if (!key) {
+        return {
+          ok: false,
+          message: "Google API key is missing.",
+          statusCode: 500,
+        };
+      }
+      const { phone } = await fetchPhoneFromPlaceId("ChIJN1t_tDeuEmsRUsoyG83frY4", key);
 
       return {
         ok: true,
-        message: `Google test call succeeded (${response.data.status ?? "OK"}).`,
-        isMock: response.isMock,
-        statusCode: response.statusCode,
+        message: `Google phone-only details call succeeded${phone ? ` (${phone})` : " (no phone found)"}.`,
+        statusCode: 200,
       };
     }
 
@@ -45,7 +44,7 @@ export async function runProviderConnectivityTest(slug: ProviderSlug): Promise<{
         return {
           ok: false,
           message: "Missing dataset_id endpoint setting.",
-          isMock: true,
+          statusCode: 500,
         };
       }
 
@@ -65,8 +64,7 @@ export async function runProviderConnectivityTest(slug: ProviderSlug): Promise<{
 
       return {
         ok: true,
-        message: `Socrata reachable (${Array.isArray(response.data) ? response.data.length : 0} row sample).`,
-        isMock: response.isMock,
+        message: `Socrata reachable (${Array.isArray(response.data) ? response.data.length : 0} rows returned).`,
         statusCode: response.statusCode,
       };
     }
@@ -75,13 +73,12 @@ export async function runProviderConnectivityTest(slug: ProviderSlug): Promise<{
       const response = await providerRequest<Record<string, unknown>>({
         slug,
         endpointKey: "domain_lookup",
-        pathParams: { domain: "example.com" },
+        pathParams: { domain: "ct.gov" },
       });
 
       return {
         ok: true,
         message: `RDAP test succeeded (${response.data.ldhName ?? "domain response"}).`,
-        isMock: response.isMock,
         statusCode: response.statusCode,
       };
     }
@@ -105,7 +102,6 @@ export async function runProviderConnectivityTest(slug: ProviderSlug): Promise<{
       return {
         ok: true,
         message: "Nominatim test succeeded.",
-        isMock: response.isMock,
         statusCode: response.statusCode,
       };
     }
@@ -115,9 +111,9 @@ export async function runProviderConnectivityTest(slug: ProviderSlug): Promise<{
       const response = await providerRequest<Record<string, unknown>>({
         slug,
         endpointKey: "enrich_domain",
-        pathParams: { domain: "example.com" },
+        pathParams: { domain: "ct.gov" },
         query: {
-          domain: "example.com",
+          domain: "ct.gov",
         },
         headers: token
           ? {
@@ -129,17 +125,16 @@ export async function runProviderConnectivityTest(slug: ProviderSlug): Promise<{
       return {
         ok: true,
         message: "Generic enrichment endpoint reachable.",
-        isMock: response.isMock,
         statusCode: response.statusCode,
       };
     }
 
-    return { ok: false, message: "Unknown provider.", isMock: true };
+    return { ok: false, message: "Unknown provider.", statusCode: 400 };
   } catch (error) {
     return {
       ok: false,
       message: error instanceof Error ? error.message : "Provider test failed",
-      isMock: false,
+      statusCode: 502,
     };
   }
 }

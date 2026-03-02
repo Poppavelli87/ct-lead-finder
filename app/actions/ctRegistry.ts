@@ -31,7 +31,7 @@ export async function runCtRegistrySearchAction(
   revalidatePath("/search/ct-registry");
 
   return {
-    message: `Imported ${result.leads.length} registry leads${result.isMock ? " (mock mode)" : ""}.`,
+    message: `Imported ${result.leads.length} registry leads.`,
   };
 }
 

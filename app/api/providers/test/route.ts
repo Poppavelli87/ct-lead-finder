@@ -16,7 +16,7 @@ export async function GET(request: NextRequest) {
 
   const result = await runProviderConnectivityTest(slug);
   return NextResponse.json(result, {
-    status: result.ok ? 200 : 400,
+    status: result.ok ? 200 : (result.statusCode ?? 400),
   });
 }
 

@@ -1,11 +1,5 @@
-import { isTruthy } from "./utils";
-
 export function getAdminPassword(): string {
   return process.env.ADMIN_PASSWORD ?? "change-me-admin-password";
-}
-
-export function isMockGoogleEnabled(): boolean {
-  return isTruthy(process.env.MOCK_GOOGLE ?? "true");
 }
 
 export function hasValidEncryptionKey(): boolean {
@@ -15,7 +9,7 @@ export function hasValidEncryptionKey(): boolean {
 
 export function encryptionWarningMessage(): string | null {
   if (hasValidEncryptionKey()) return null;
-  return "APP_ENCRYPTION_KEY is missing or shorter than 32 chars. Secret storage is disabled; app remains in mock-safe mode.";
+  return "APP_ENCRYPTION_KEY is missing or shorter than 32 chars. Secret storage is disabled.";
 }
 
 export const DEFAULT_ADMIN_USERNAME = "admin";

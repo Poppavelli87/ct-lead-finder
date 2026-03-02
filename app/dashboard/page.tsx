@@ -79,7 +79,6 @@ export default async function DashboardPage() {
                 <th className="px-2 py-2">Provider</th>
                 <th className="px-2 py-2">Endpoint</th>
                 <th className="px-2 py-2">Status</th>
-                <th className="px-2 py-2">Mock</th>
                 <th className="px-2 py-2">Cost</th>
               </tr>
             </thead>
@@ -90,13 +89,12 @@ export default async function DashboardPage() {
                   <td className="px-2 py-2">{call.provider.name}</td>
                   <td className="px-2 py-2">{call.endpointKey}</td>
                   <td className="px-2 py-2">{call.statusCode ?? "-"}</td>
-                  <td className="px-2 py-2">{call.isMock ? "Yes" : "No"}</td>
                   <td className="px-2 py-2">${Number(call.costUsd).toFixed(3)}</td>
                 </tr>
               ))}
               {!latestApiCalls.length ? (
                 <tr>
-                  <td className="px-2 py-4 text-slate-500" colSpan={6}>
+                  <td className="px-2 py-4 text-slate-500" colSpan={5}>
                     No API usage recorded yet.
                   </td>
                 </tr>

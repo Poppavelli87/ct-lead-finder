@@ -168,7 +168,6 @@ export default async function ApiHubPage() {
                         <th className="px-2 py-1">Status</th>
                         <th className="px-2 py-1">Duration</th>
                         <th className="px-2 py-1">Cost</th>
-                        <th className="px-2 py-1">Mock</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -179,12 +178,11 @@ export default async function ApiHubPage() {
                           <td className="px-2 py-1">{call.statusCode ?? "-"}</td>
                           <td className="px-2 py-1">{call.durationMs ?? 0}ms</td>
                           <td className="px-2 py-1">${Number(call.costUsd).toFixed(3)}</td>
-                          <td className="px-2 py-1">{call.isMock ? "Yes" : "No"}</td>
                         </tr>
                       ))}
                       {!provider.apiUsage.length ? (
                         <tr>
-                          <td colSpan={6} className="px-2 py-3 text-slate-500">
+                          <td colSpan={5} className="px-2 py-3 text-slate-500">
                             No calls logged yet.
                           </td>
                         </tr>

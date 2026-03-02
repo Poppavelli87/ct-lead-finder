@@ -19,16 +19,18 @@ export const PROVIDER_DEFAULTS: Array<{
   defaultCostPerCall: number;
 }> = [
   {
-    name: "Google Places API",
+    name: "Google Places API (New)",
     slug: PROVIDER_SLUGS.GOOGLE,
     enabled: false,
     baseUrl: "https://maps.googleapis.com",
     endpoints: {
+      text_search_new: "https://places.googleapis.com/v1/places:searchText",
+      place_phone_details: "https://places.googleapis.com/v1/places/{placeId}",
       text_search: "/maps/api/place/textsearch/json",
       place_details: "/maps/api/place/details/json",
       geocode: "/maps/api/geocode/json",
     },
-    rateLimitPerSec: 6,
+    rateLimitPerSec: 10,
     timeoutMs: 12000,
     defaultCostPerCall: 0,
   },
@@ -38,7 +40,7 @@ export const PROVIDER_DEFAULTS: Array<{
     enabled: true,
     baseUrl: "https://data.ct.gov",
     endpoints: {
-      dataset_id: "",
+      dataset_id: "n7gp-d28j",
       query: "/resource/{datasetId}.json",
     },
     rateLimitPerSec: 4,
@@ -75,7 +77,7 @@ export const PROVIDER_DEFAULTS: Array<{
     name: "Company Enrichment API (Generic)",
     slug: PROVIDER_SLUGS.GENERIC_ENRICH,
     enabled: false,
-    baseUrl: "https://example-enrichment.local",
+    baseUrl: "https://api.company-enrichment.com",
     endpoints: {
       enrich_domain: "/enrich?domain={domain}",
     },

@@ -6,6 +6,7 @@ import { requireUser } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { providerUpdateSchema } from "@/lib/validation";
 import { canEncryptSecrets, encryptSecret } from "@/lib/security/encryption";
+import { PROVIDER_SLUGS } from "@/lib/providers/constants";
 
 export async function saveProviderAction(formData: FormData): Promise<void> {
   await requireUser();
@@ -45,10 +46,12 @@ export async function saveProviderAction(formData: FormData): Promise<void> {
     secretEncrypted = encryptSecret(submittedSecret);
   }
 
+  const enableWhenConfigured = Boolean(submittedSecret && existing.slug === PROVIDER_SLUGS.GOOGLE);
+
   await db.provider.update({
     where: { id: parsed.data.id },
     data: {
-      enabled: parsed.data.enabled,
+      enabled: enableWhenConfigured ? true : parsed.data.enabled,
       baseUrl: parsed.data.baseUrl,
       endpoints: endpoints as Prisma.InputJsonValue,
       rateLimitPerSec: parsed.data.rateLimitPerSec,

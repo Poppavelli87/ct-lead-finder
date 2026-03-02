@@ -61,14 +61,6 @@ For each provider card you can:
 
 If `APP_ENCRYPTION_KEY` is missing or too short, secret saves are blocked by design.
 
-## Mock Mode
-
-App works with no keys:
-
-- `MOCK_GOOGLE=true` forces deterministic mock Google responses
-- Registry search falls back to mock if dataset id is missing
-- Demo leads and provider defaults are seeded
-
 ## Bulk Enrichment (PURPLE V2)
 
 Route: `/enrich/bulk`

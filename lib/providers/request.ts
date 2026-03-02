@@ -1,12 +1,8 @@
 import { db } from "../db";
-import { getMonthKey, hashRequest } from "../utils";
 import { decryptSecret } from "../security/encryption";
-import {
-  GOOGLE_DETAILS_COST,
-  GOOGLE_TEXT_SEARCH_COST,
-  ProviderSlug,
-  PROVIDER_SLUGS,
-} from "./constants";
+import { getMonthKey, hashRequest } from "../utils";
+import { ensureProviderDefaults } from "./bootstrap";
+import { GOOGLE_DETAILS_COST, GOOGLE_TEXT_SEARCH_COST, ProviderSlug, PROVIDER_SLUGS } from "./constants";
 
 type Primitive = string | number | boolean;
 
@@ -21,18 +17,31 @@ export type ProviderRequestOptions = {
   timeoutMs?: number;
   leadId?: string;
   jobId?: string;
-  forceMock?: boolean;
-  mockResponse?: unknown;
   costUsd?: number;
 };
+
+type ProviderRequestErrorCode = "PROVIDER_NOT_CONFIGURED" | "PROVIDER_REQUEST_FAILED";
 
 const providerThrottleState = new Map<string, number>();
 
 export class ProviderRequestError extends Error {
-  statusCode?: number;
-  constructor(message: string, statusCode?: number) {
-    super(message);
-    this.statusCode = statusCode;
+  code: ProviderRequestErrorCode;
+  provider?: string;
+  statusCode: number;
+  upstreamStatus?: number;
+
+  constructor(args: {
+    code: ProviderRequestErrorCode;
+    message: string;
+    provider?: string;
+    statusCode: number;
+    upstreamStatus?: number;
+  }) {
+    super(args.message);
+    this.code = args.code;
+    this.provider = args.provider;
+    this.statusCode = args.statusCode;
+    this.upstreamStatus = args.upstreamStatus;
   }
 }
 
@@ -55,7 +64,8 @@ function resolveEndpoint(provider: any, endpointKey: string, pathParams?: Record
 }
 
 async function throttleProvider(provider: any): Promise<void> {
-  const perSec = Math.max(1, provider.rateLimitPerSec || 1);
+  const providerLimit = Math.max(1, provider.rateLimitPerSec || 1);
+  const perSec = provider.slug === PROVIDER_SLUGS.GOOGLE ? Math.min(providerLimit, 10) : providerLimit;
   const minInterval = Math.ceil(1000 / perSec);
   const now = Date.now();
   const nextAllowedAt = providerThrottleState.get(provider.slug) ?? 0;
@@ -73,7 +83,9 @@ function resolveCost(provider: any, endpointKey: string, override?: number): num
 
   if (provider.slug === PROVIDER_SLUGS.GOOGLE) {
     if (endpointKey === "text_search") return GOOGLE_TEXT_SEARCH_COST;
+    if (endpointKey === "text_search_new") return GOOGLE_TEXT_SEARCH_COST;
     if (endpointKey === "place_details") return GOOGLE_DETAILS_COST;
+    if (endpointKey === "place_phone_details") return GOOGLE_DETAILS_COST;
   }
 
   const fallback = provider.defaultCostPerCall ?? 0;
@@ -135,7 +147,6 @@ async function logUsage(args: {
   endpointKey: string;
   timestamp: Date;
   costUsd: number;
-  isMock: boolean;
   requestHash: string;
   jobId?: string;
   leadId?: string;
@@ -144,18 +155,17 @@ async function logUsage(args: {
   errorMessage?: string;
 }): Promise<void> {
   const { provider } = args;
+  void args.requestHash;
+  void args.jobId;
+  void args.leadId;
+  void args.durationMs;
+
   await db.apiUsage.create({
     data: {
       providerId: provider.id,
       endpointKey: args.endpointKey,
       timestamp: args.timestamp,
-      costUsd: args.costUsd,
-      isMock: args.isMock,
-      requestHash: args.requestHash,
-      jobId: args.jobId,
-      leadId: args.leadId,
       statusCode: args.statusCode,
-      durationMs: args.durationMs,
       errorMessage: args.errorMessage,
     },
   });
@@ -182,9 +192,18 @@ async function logUsage(args: {
 }
 
 export async function getProviderBySlug(slug: ProviderSlug): Promise<any> {
-  const provider = await db.provider.findUnique({ where: { slug } });
+  let provider = await db.provider.findUnique({ where: { slug } });
   if (!provider) {
-    throw new ProviderRequestError(`Provider ${slug} is not configured.`);
+    await ensureProviderDefaults();
+    provider = await db.provider.findUnique({ where: { slug } });
+  }
+  if (!provider) {
+    throw new ProviderRequestError({
+      code: "PROVIDER_NOT_CONFIGURED",
+      provider: slug,
+      statusCode: 500,
+      message: `Provider ${slug} is not configured.`,
+    });
   }
   return provider;
 }
@@ -196,7 +215,6 @@ export async function getProviderSecret(slug: ProviderSlug): Promise<string | nu
 
 export async function providerRequest<T = unknown>(options: ProviderRequestOptions): Promise<{
   data: T;
-  isMock: boolean;
   statusCode: number;
   durationMs: number;
 }> {
@@ -208,46 +226,26 @@ export async function providerRequest<T = unknown>(options: ProviderRequestOptio
   const baseRequestFingerprint = `${provider.slug}:${options.endpointKey}:${method}:${JSON.stringify(options.pathParams ?? {})}:${JSON.stringify(options.query ?? {})}`;
   const requestHash = hashRequest(baseRequestFingerprint);
 
-  const shouldUseMock = options.forceMock || (!provider.enabled && options.mockResponse !== undefined);
-
-  if (!provider.enabled && !shouldUseMock) {
-    const error = `Provider ${provider.name} is disabled.`;
+  if (!provider.enabled) {
+    const message = `Provider ${provider.slug} is disabled in API Hub.`;
     await logUsage({
       provider,
       endpointKey: options.endpointKey,
       timestamp,
       costUsd,
-      isMock: true,
       requestHash,
       jobId: options.jobId,
       leadId: options.leadId,
-      statusCode: 503,
+      statusCode: 500,
       durationMs: 0,
-      errorMessage: error,
+      errorMessage: message,
     });
-    throw new ProviderRequestError(error, 503);
-  }
-
-  if (shouldUseMock) {
-    await logUsage({
-      provider,
-      endpointKey: options.endpointKey,
-      timestamp,
-      costUsd,
-      isMock: true,
-      requestHash,
-      jobId: options.jobId,
-      leadId: options.leadId,
-      statusCode: 200,
-      durationMs: 1,
+    throw new ProviderRequestError({
+      code: "PROVIDER_NOT_CONFIGURED",
+      provider: provider.slug,
+      statusCode: 500,
+      message,
     });
-
-    return {
-      data: (options.mockResponse ?? {}) as T,
-      isMock: true,
-      statusCode: 200,
-      durationMs: 1,
-    };
   }
 
   await throttleProvider(provider);
@@ -282,13 +280,16 @@ export async function providerRequest<T = unknown>(options: ProviderRequestOptio
     const data = tryParseJson(text);
 
     if (!response.ok) {
-      const message = `Provider call failed (${provider.slug}/${options.endpointKey}) with status ${response.status}`;
+      const bodySnippet = text.slice(0, 500);
+      const message =
+        response.status === 429
+          ? `Provider rate limited (${provider.slug}/${options.endpointKey}) status 429: ${bodySnippet || "empty response body"}`
+          : `Provider call failed (${provider.slug}/${options.endpointKey}) with status ${response.status}: ${bodySnippet || "empty response body"}`;
       await logUsage({
         provider,
         endpointKey: options.endpointKey,
         timestamp,
         costUsd,
-        isMock: false,
         requestHash,
         jobId: options.jobId,
         leadId: options.leadId,
@@ -296,7 +297,13 @@ export async function providerRequest<T = unknown>(options: ProviderRequestOptio
         durationMs,
         errorMessage: message,
       });
-      throw new ProviderRequestError(message, response.status);
+      throw new ProviderRequestError({
+        code: "PROVIDER_REQUEST_FAILED",
+        provider: provider.slug,
+        statusCode: 502,
+        upstreamStatus: response.status,
+        message,
+      });
     }
 
     await logUsage({
@@ -304,7 +311,6 @@ export async function providerRequest<T = unknown>(options: ProviderRequestOptio
       endpointKey: options.endpointKey,
       timestamp,
       costUsd,
-      isMock: false,
       requestHash,
       jobId: options.jobId,
       leadId: options.leadId,
@@ -314,11 +320,14 @@ export async function providerRequest<T = unknown>(options: ProviderRequestOptio
 
     return {
       data: data as T,
-      isMock: false,
       statusCode: response.status,
       durationMs,
     };
   } catch (error) {
+    if (error instanceof ProviderRequestError) {
+      throw error;
+    }
+
     const durationMs = Date.now() - startedAt;
     const message = error instanceof Error ? error.message : "Unknown provider request error";
 
@@ -327,16 +336,20 @@ export async function providerRequest<T = unknown>(options: ProviderRequestOptio
       endpointKey: options.endpointKey,
       timestamp,
       costUsd,
-      isMock: false,
       requestHash,
       jobId: options.jobId,
       leadId: options.leadId,
-      statusCode: 500,
+      statusCode: 502,
       durationMs,
       errorMessage: message,
     });
 
-    throw new ProviderRequestError(message, 500);
+    throw new ProviderRequestError({
+      code: "PROVIDER_REQUEST_FAILED",
+      provider: provider.slug,
+      statusCode: 502,
+      message,
+    });
   } finally {
     clearTimeout(timeout);
   }
@@ -350,4 +363,3 @@ function tryParseJson(text: string): unknown {
     return { raw: text };
   }
 }
-
