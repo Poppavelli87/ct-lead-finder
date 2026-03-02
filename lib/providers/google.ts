@@ -1,5 +1,6 @@
 import { dedupeAndSaveLead } from "../dedupe";
 import { isMockGoogleEnabled } from "../env";
+import { isMasterDuplicate } from "../master-dedupe";
 import { computePreQualScore } from "../scoring";
 import { domainFromWebsite } from "../utils";
 import { progressiveCountyOrder } from "../ct-counties";
@@ -173,6 +174,7 @@ export type GoogleSearchInput = {
 export async function runGoogleProgressiveSearch(input: GoogleSearchInput): Promise<{
   saved: LeadRecord[];
   skippedForLowPrequal: number;
+  skippedForMasterDedupe: number;
   searchedLocations: string[];
 }> {
   const mode = await resolveGoogleMode();
@@ -185,6 +187,7 @@ export async function runGoogleProgressiveSearch(input: GoogleSearchInput): Prom
 
   const saved: LeadRecord[] = [];
   let skippedForLowPrequal = 0;
+  let skippedForMasterDedupe = 0;
 
   for (const location of locations) {
     if (saved.length >= target) break;
@@ -209,6 +212,14 @@ export async function runGoogleProgressiveSearch(input: GoogleSearchInput): Prom
 
       if (preQual < 65) {
         skippedForLowPrequal += 1;
+        continue;
+      }
+      const existsInMaster = await isMasterDuplicate({
+        name: candidate.name,
+      });
+
+      if (existsInMaster) {
+        skippedForMasterDedupe += 1;
         continue;
       }
 
@@ -238,11 +249,22 @@ export async function runGoogleProgressiveSearch(input: GoogleSearchInput): Prom
   return {
     saved,
     skippedForLowPrequal,
+    skippedForMasterDedupe,
     searchedLocations: locations,
   };
 }
 
 export async function enrichLeadWithGoogle(lead: LeadRecord, jobId?: string): Promise<LeadRecord> {
+  const existsInMaster = await isMasterDuplicate({
+    name: lead.name,
+    phone: lead.phone,
+    website: lead.website,
+  });
+
+  if (existsInMaster) {
+    return lead;
+  }
+
   const locationText = [lead.city, lead.state, lead.zip].filter(Boolean).join(" ");
   const query = `${lead.name} ${locationText}`.trim();
 
@@ -287,6 +309,11 @@ export async function enrichLeadWithGoogle(lead: LeadRecord, jobId?: string): Pr
 }
 
 export async function googleResolverFromName(name: string, city?: string | null, county?: string | null, jobId?: string) {
+  const existsInMaster = await isMasterDuplicate({ name });
+  if (existsInMaster) {
+    return null;
+  }
+
   const query = `${name} ${city ?? ""} CT`.trim();
   const text = await googleTextSearch(query, jobId, undefined, 5);
   const candidate = text.data.results?.[0];

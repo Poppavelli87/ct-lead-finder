@@ -5,6 +5,20 @@ import { requireUser } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { enrichLeadWithGoogle } from "@/lib/providers/google";
 
+async function enrichLeadIds(ids: string[]): Promise<void> {
+  if (!ids.length) return;
+
+  const leads = await db.lead.findMany({
+    where: {
+      id: { in: ids },
+    },
+  });
+
+  for (const lead of leads) {
+    await enrichLeadWithGoogle(lead);
+  }
+}
+
 export async function enrichLeadNowAction(formData: FormData): Promise<void> {
   await requireUser();
   const leadId = String(formData.get("leadId") ?? "").trim();
@@ -30,18 +44,27 @@ export async function enrichSelectedWithGoogleAction(formData: FormData): Promis
     return;
   }
 
-  const leads = await db.lead.findMany({
-    where: {
-      id: { in: ids },
-    },
-  });
-
-  for (const lead of leads) {
-    await enrichLeadWithGoogle(lead);
-  }
+  await enrichLeadIds(ids);
 
   revalidatePath("/leads");
   revalidatePath("/search/ct-registry");
+  revalidatePath("/dashboard");
+}
+
+export async function enrichAllVisibleWithGoogleAction(formData: FormData): Promise<void> {
+  await requireUser();
+  const ids = formData
+    .getAll("leadId")
+    .map((value) => String(value).trim())
+    .filter(Boolean);
+
+  if (!ids.length) {
+    return;
+  }
+
+  await enrichLeadIds(ids);
+
+  revalidatePath("/leads");
   revalidatePath("/dashboard");
 }
 

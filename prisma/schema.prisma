@@ -176,3 +176,14 @@ model MonthlyUsage {
   @@index([month])
 }
 
+model MasterRecord {
+  id            String   @id @default(cuid())
+  name          String?
+  phone         String?
+  website       String?
+  normalizedKey String   @unique
+  createdAt     DateTime @default(now())
+
+  @@index([createdAt])
+}
+

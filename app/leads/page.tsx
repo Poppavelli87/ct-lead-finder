@@ -1,8 +1,10 @@
-import Link from "next/link";
+import { LeadsTable } from "@/components/leads-table";
 import { requireUser } from "@/lib/auth";
 import { ensureBootstrapData } from "@/lib/bootstrap";
 import { db } from "@/lib/db";
 import { buildLeadWhere } from "@/lib/lead-filters";
+
+const leadSources = ["GOOGLE", "CT_REGISTRY", "UPLOAD", "MANUAL", "DIRECTORY", "MOCK"];
 
 export default async function LeadsPage({
   searchParams,
@@ -68,51 +70,19 @@ export default async function LeadsPage({
         </button>
       </form>
 
-      <div className="overflow-x-auto rounded-xl border border-slate-200 bg-white shadow-sm">
-        <table className="min-w-full text-sm">
-          <thead>
-            <tr className="border-b border-slate-200 text-left text-slate-500">
-              <th className="px-3 py-2">Name</th>
-              <th className="px-3 py-2">City</th>
-              <th className="px-3 py-2">County</th>
-              <th className="px-3 py-2">Phone</th>
-              <th className="px-3 py-2">Website</th>
-              <th className="px-3 py-2">Source</th>
-              <th className="px-3 py-2">Qualified</th>
-              <th className="px-3 py-2">Score</th>
-              <th className="px-3 py-2">Action</th>
-            </tr>
-          </thead>
-          <tbody>
-            {leads.map((lead) => (
-              <tr key={lead.id} className="border-b border-slate-100 text-slate-700">
-                <td className="px-3 py-2 font-medium text-slate-900">{lead.name}</td>
-                <td className="px-3 py-2">{lead.city || "-"}</td>
-                <td className="px-3 py-2">{lead.county || "-"}</td>
-                <td className="px-3 py-2">{lead.phone || "-"}</td>
-                <td className="px-3 py-2">{lead.website || "-"}</td>
-                <td className="px-3 py-2">{lead.source}</td>
-                <td className="px-3 py-2">{lead.qualified ? "Yes" : "No"}</td>
-                <td className="px-3 py-2">{lead.qualificationScore}</td>
-                <td className="px-3 py-2">
-                  <Link href={`/leads/${lead.id}`} className="text-sky-700 hover:underline">
-                    Open
-                  </Link>
-                </td>
-              </tr>
-            ))}
-            {!leads.length ? (
-              <tr>
-                <td className="px-3 py-4 text-slate-500" colSpan={9}>
-                  No leads match these filters.
-                </td>
-              </tr>
-            ) : null}
-          </tbody>
-        </table>
-      </div>
+      <LeadsTable
+        leads={leads.map((lead) => ({
+          id: lead.id,
+          name: lead.name,
+          city: lead.city,
+          county: lead.county,
+          phone: lead.phone,
+          website: lead.website,
+          source: lead.source,
+          qualified: lead.qualified,
+          qualificationScore: lead.qualificationScore,
+        }))}
+      />
     </div>
   );
 }
-
-  const leadSources = ["GOOGLE", "CT_REGISTRY", "UPLOAD", "MANUAL", "DIRECTORY", "MOCK"];

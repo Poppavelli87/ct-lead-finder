@@ -1,5 +1,6 @@
 import { db } from "./db";
 import { dedupeAndSaveLead } from "./dedupe";
+import { findMasterRecordByIdentity } from "./master-dedupe";
 import { googleResolverFromName, inferDomain } from "./providers/google";
 import { enrichCompanyByDomain } from "./providers/genericEnrich";
 import { lookupRdapDomain } from "./providers/rdap";
@@ -71,29 +72,43 @@ async function processRow(job: any, row: any, mapping: RowMapping): Promise<{ st
 
   const city = mapValue(original, mapping.city);
   const county = mapValue(original, mapping.county);
+  const phone = mapValue(original, mapping.phone);
+  const website = mapValue(original, mapping.website);
 
-  let lead = await googleResolverFromName(name, city, county, job.id);
-  const pass1Data = {
-    resolvedWith: "google",
-    leadId: lead?.id ?? null,
-  };
+  const masterMatch = await findMasterRecordByIdentity({
+    name,
+    phone,
+    website,
+  });
+
+  let lead = masterMatch ? null : await googleResolverFromName(name, city, county, job.id);
+  const pass1Data = masterMatch
+    ? {
+        resolvedWith: "master_dedupe",
+        leadId: null,
+        masterRecordId: masterMatch.id,
+      }
+    : {
+        resolvedWith: "google",
+        leadId: lead?.id ?? null,
+      };
 
   if (!lead) {
     lead = await dedupeAndSaveLead({
       source: "UPLOAD",
       name,
-      website: mapValue(original, mapping.website),
+      website,
       city,
       county,
-      phone: mapValue(original, mapping.phone),
+      phone,
       email: mapValue(original, mapping.email),
       address1: mapValue(original, mapping.address),
       state: "CT",
     });
   }
 
-  const website = lead.website || mapValue(original, mapping.website);
-  const pass2 = await extractWebsiteSignals(website);
+  const effectiveWebsite = lead.website || website;
+  const pass2 = await extractWebsiteSignals(effectiveWebsite);
 
   const updatedLead = await db.lead.update({
     where: { id: lead.id },
@@ -106,7 +121,7 @@ async function processRow(job: any, row: any, mapping: RowMapping): Promise<{ st
   });
 
   const pass2Data = {
-    website,
+    website: effectiveWebsite,
     extractedPhone: pass2.phone,
     extractedEmail: pass2.email,
     extractedAddress: pass2.address,

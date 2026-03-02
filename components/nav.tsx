@@ -7,6 +7,7 @@ const links = [
   { href: "/search/google", label: "Google Search" },
   { href: "/search/ct-registry", label: "CT Registry" },
   { href: "/enrich/bulk", label: "Bulk Enrich" },
+  { href: "/master-upload", label: "Master Upload" },
   { href: "/export", label: "Export" },
   { href: "/api-hub", label: "API Hub" },
 ];

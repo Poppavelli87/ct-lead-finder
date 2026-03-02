@@ -30,7 +30,7 @@ export async function runGoogleSearchAction(
   revalidatePath("/search/google");
 
   return {
-    message: `Saved ${result.saved.length} leads. Skipped ${result.skippedForLowPrequal} low-score candidates.`,
+    message: `Saved ${result.saved.length} leads. Skipped ${result.skippedForLowPrequal} low-score and ${result.skippedForMasterDedupe} master-dedupe candidates.`,
   };
 }
 
