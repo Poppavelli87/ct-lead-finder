@@ -20,13 +20,11 @@ function formatDate(date: Date): string {
 function mockRegistryRows(filters: CtRegistryFilters) {
   const seedName = filters.nameContains || "CT Business";
   return Array.from({ length: 20 }).map((_, idx) => ({
-    id: `mock-reg-${idx}`,
-    business_name: `${seedName} ${idx + 1}`,
-    city: filters.city || ["Hartford", "New Haven", "Bridgeport"][idx % 3],
-    entity_type: filters.entityType || "LLC",
-    filing_date: formatDate(subMonths(new Date(), idx % 8)),
-    principal_address: `${120 + idx} Oak Street`,
-    zip: `06${String(100 + idx).slice(-3)}`,
+    accountnumber: `mock-reg-${idx}`,
+    name: `${seedName} ${idx + 1}`,
+    status: "ACTIVE",
+    create_dt: formatDate(subMonths(new Date(), idx % 8)),
+    mailing_address: `${120 + idx} Oak Street, Hartford, CT 06103`,
   }));
 }
 
@@ -65,15 +63,7 @@ export async function searchCtRegistry(filters: CtRegistryFilters) {
 
   if (filters.nameContains) {
     const value = filters.nameContains.replace(/'/g, "''");
-    whereClauses.push(`upper(business_name) like upper('%${value}%')`);
-  }
-  if (filters.city) {
-    const value = filters.city.replace(/'/g, "''");
-    whereClauses.push(`upper(city) = upper('${value}')`);
-  }
-  if (filters.entityType) {
-    const value = filters.entityType.replace(/'/g, "''");
-    whereClauses.push(`upper(entity_type) = upper('${value}')`);
+    whereClauses.push(`upper(name) like upper('%${value}%')`);
   }
 
   const fromDate = filters.newBusinessesOnly
@@ -81,11 +71,11 @@ export async function searchCtRegistry(filters: CtRegistryFilters) {
     : filters.filingDateFrom;
 
   if (fromDate) {
-    whereClauses.push(`filing_date >= '${fromDate}'`);
+    whereClauses.push(`create_dt >= '${fromDate}'`);
   }
 
   if (filters.filingDateTo) {
-    whereClauses.push(`filing_date <= '${filters.filingDateTo}'`);
+    whereClauses.push(`create_dt <= '${filters.filingDateTo}'`);
   }
 
   const shouldMock = !provider.enabled || !datasetId;
@@ -98,7 +88,7 @@ export async function searchCtRegistry(filters: CtRegistryFilters) {
     query: {
       $limit: effectiveLimit,
       $where: whereClauses.length ? whereClauses.join(" AND ") : undefined,
-      $order: "filing_date DESC",
+      $order: "create_dt DESC",
     },
     headers: appToken
       ? {
@@ -111,20 +101,17 @@ export async function searchCtRegistry(filters: CtRegistryFilters) {
 
   const leads: any[] = [];
   for (const row of rows) {
-    const name = valueFromRow(row, ["business_name", "entity_name", "name"]);
+    const name = valueFromRow(row, ["name"]);
     if (!name) continue;
 
     const lead = await dedupeAndSaveLead({
       source: "CT_REGISTRY",
-      externalId: valueFromRow(row, ["id", "record_id", "entity_number"]),
+      externalId: valueFromRow(row, ["accountnumber"]),
       name,
-      city: valueFromRow(row, ["city", "town"]),
-      county: valueFromRow(row, ["county"]),
-      industryType: valueFromRow(row, ["entity_type", "type"]),
-      address1: valueFromRow(row, ["principal_address", "address", "street"]),
-      zip: valueFromRow(row, ["zip", "zipcode", "postal_code"]),
+      industryType: valueFromRow(row, ["status"]),
+      address1: valueFromRow(row, ["mailing_address"]),
       state: "CT",
-      notes: valueFromRow(row, ["filing_date"]),
+      notes: valueFromRow(row, ["create_dt"]),
     });
     leads.push(lead);
   }
