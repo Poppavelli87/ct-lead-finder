@@ -1,7 +1,27 @@
 import { notFound } from "next/navigation";
-import { enrichLeadNowAction } from "@/app/actions/leads";
+import { LeadNextAction } from "@/components/lead-next-action";
 import { requireUser } from "@/lib/auth";
 import { db } from "@/lib/db";
+import { derivePipelineStatus } from "@/lib/pipeline-status";
+
+function statusBadge(status: string): { label: string; className: string } {
+  if (status === "PHONE_FOUND") {
+    return { label: "Phone Found", className: "bg-emerald-100 text-emerald-800" };
+  }
+  if (status === "MATCHED") {
+    return { label: "Matched", className: "bg-sky-100 text-sky-800" };
+  }
+  if (status === "NO_MATCH") {
+    return { label: "No Match", className: "bg-amber-100 text-amber-800" };
+  }
+  if (status === "NO_PHONE") {
+    return { label: "No Phone", className: "bg-amber-100 text-amber-800" };
+  }
+  if (status === "FAILED") {
+    return { label: "Failed", className: "bg-rose-100 text-rose-800" };
+  }
+  return { label: "Needs Match", className: "bg-slate-100 text-slate-700" };
+}
 
 export default async function LeadDetailPage({ params }: { params: Promise<{ id: string }> }) {
   await requireUser();
@@ -19,6 +39,16 @@ export default async function LeadDetailPage({ params }: { params: Promise<{ id:
   });
 
   if (!lead) notFound();
+  const pipelineStatus = derivePipelineStatus({
+    source: lead.source,
+    externalId: lead.externalId,
+    phone: lead.phone,
+    matchStatus: lead.matchStatus,
+    phoneStatus: lead.phoneStatus,
+  });
+
+  const badge = statusBadge(pipelineStatus);
+  const nextAction = lead.phone ? "EXPORT" : lead.externalId ? "PHONE" : "MATCH";
 
   return (
     <div className="space-y-6">
@@ -26,19 +56,16 @@ export default async function LeadDetailPage({ params }: { params: Promise<{ id:
         <div>
           <h1 className="text-2xl font-semibold text-slate-900">{lead.name}</h1>
           <p className="mt-1 text-sm text-slate-600">
-            {lead.city || "Unknown city"}, {lead.county || "Unknown county"} � {lead.source}
+            {lead.city || "Unknown city"}, {lead.county || "Unknown county"} - {lead.source}
           </p>
+          <div className="mt-2">
+            <span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-medium ${badge.className}`}>
+              {badge.label}
+            </span>
+          </div>
         </div>
 
-        <form action={enrichLeadNowAction}>
-          <input type="hidden" name="leadId" value={lead.id} />
-          <button
-            type="submit"
-            className="rounded-md bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-700"
-          >
-            Enrich Now
-          </button>
-        </form>
+        <LeadNextAction leadId={lead.id} actionState={nextAction} />
       </div>
 
       <div className="grid gap-4 md:grid-cols-2">
@@ -68,6 +95,14 @@ export default async function LeadDetailPage({ params }: { params: Promise<{ id:
             <div className="flex justify-between gap-4">
               <dt className="text-slate-500">Score</dt>
               <dd>{lead.qualificationScore}</dd>
+            </div>
+            <div className="flex justify-between gap-4">
+              <dt className="text-slate-500">Last Match Attempt</dt>
+              <dd>{lead.matchAttemptedAt ? lead.matchAttemptedAt.toLocaleString() : "Never"}</dd>
+            </div>
+            <div className="flex justify-between gap-4">
+              <dt className="text-slate-500">Last Phone Attempt</dt>
+              <dd>{lead.phoneAttemptedAt ? lead.phoneAttemptedAt.toLocaleString() : "Never"}</dd>
             </div>
           </dl>
         </div>
@@ -107,7 +142,6 @@ export default async function LeadDetailPage({ params }: { params: Promise<{ id:
                 <th className="px-2 py-2">Provider</th>
                 <th className="px-2 py-2">Endpoint</th>
                 <th className="px-2 py-2">Status</th>
-                <th className="px-2 py-2">Mock</th>
               </tr>
             </thead>
             <tbody>
@@ -117,12 +151,11 @@ export default async function LeadDetailPage({ params }: { params: Promise<{ id:
                   <td className="px-2 py-2">{item.provider.name}</td>
                   <td className="px-2 py-2">{item.endpointKey}</td>
                   <td className="px-2 py-2">{item.statusCode ?? "-"}</td>
-                  <td className="px-2 py-2">{item.isMock ? "Yes" : "No"}</td>
                 </tr>
               ))}
               {!lead.apiUsage.length ? (
                 <tr>
-                  <td colSpan={5} className="px-2 py-4 text-slate-500">
+                  <td colSpan={4} className="px-2 py-4 text-slate-500">
                     No API calls linked to this lead yet.
                   </td>
                 </tr>

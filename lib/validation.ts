@@ -40,6 +40,7 @@ export const leadFilterSchema = z.object({
   city: z.string().optional(),
   county: z.string().optional(),
   industryType: z.string().optional(),
+  pipelineStatus: z.enum(["NEEDS_MATCH", "MATCHED", "PHONE_FOUND", "NO_MATCH", "NO_PHONE", "FAILED"]).optional(),
   qualified: z.enum(["all", "yes", "no"]).default("all"),
   source: z.string().optional(),
   dateFrom: z.string().optional(),

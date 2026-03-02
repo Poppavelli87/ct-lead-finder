@@ -1,56 +1,72 @@
+import { Prisma } from "@prisma/client";
+import { pipelineStatusWhere } from "./pipeline-status";
+
 export type LeadFilterInput = {
   name?: string;
   city?: string;
   county?: string;
   industryType?: string;
+  pipelineStatus?: string;
   qualified?: "all" | "yes" | "no";
   source?: string;
   dateFrom?: string;
   dateTo?: string;
 };
 
-export function buildLeadWhere(filters: LeadFilterInput): Record<string, any> {
-  const where: Record<string, any> = {};
-  const validSources = ["GOOGLE", "CT_REGISTRY", "UPLOAD", "MANUAL", "DIRECTORY", "MOCK"];
+export function buildLeadWhere(filters: LeadFilterInput): Prisma.LeadWhereInput {
+  const where: Prisma.LeadWhereInput = {};
+  const validSources = ["GOOGLE", "CT_REGISTRY", "UPLOAD", "MANUAL", "DIRECTORY"] as const;
+  type ValidSource = (typeof validSources)[number];
+  const and: Prisma.LeadWhereInput[] = [];
 
   if (filters.name) {
-    where.name = { contains: filters.name, mode: "insensitive" };
+    and.push({ name: { contains: filters.name, mode: "insensitive" } });
   }
 
   if (filters.city) {
-    where.city = { contains: filters.city, mode: "insensitive" };
+    and.push({ city: { contains: filters.city, mode: "insensitive" } });
   }
 
   if (filters.county) {
-    where.county = { contains: filters.county, mode: "insensitive" };
+    and.push({ county: { contains: filters.county, mode: "insensitive" } });
   }
 
   if (filters.industryType) {
-    where.industryType = { contains: filters.industryType, mode: "insensitive" };
+    and.push({ industryType: { contains: filters.industryType, mode: "insensitive" } });
   }
 
   if (filters.qualified === "yes") {
-    where.qualified = true;
+    and.push({ qualified: true });
   }
 
   if (filters.qualified === "no") {
-    where.qualified = false;
+    and.push({ qualified: false });
   }
 
   if (filters.source && filters.source !== "all") {
-    if (validSources.includes(filters.source)) {
-      where.source = filters.source;
+    if ((validSources as readonly string[]).includes(filters.source)) {
+      and.push({ source: filters.source as ValidSource });
     }
   }
 
   if (filters.dateFrom || filters.dateTo) {
-    where.createdAt = {};
+    const createdAt: Prisma.DateTimeFilter = {};
     if (filters.dateFrom) {
-      where.createdAt.gte = new Date(filters.dateFrom);
+      createdAt.gte = new Date(filters.dateFrom);
     }
     if (filters.dateTo) {
-      where.createdAt.lte = new Date(filters.dateTo);
+      createdAt.lte = new Date(filters.dateTo);
     }
+    and.push({ createdAt });
+  }
+
+  const pipelineFilter = pipelineStatusWhere(filters.pipelineStatus);
+  if (pipelineFilter) {
+    and.push(pipelineFilter);
+  }
+
+  if (and.length) {
+    where.AND = and;
   }
 
   return where;
