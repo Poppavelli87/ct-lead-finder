@@ -30,7 +30,11 @@ function mockRegistryRows(filters: CtRegistryFilters) {
   }));
 }
 
-function endpointWithDataset(datasetId: string): string {
+function endpointWithDataset(endpoints: Record<string, unknown>, datasetId: string): string {
+  const queryTemplate = typeof endpoints.query === "string" ? endpoints.query : "";
+  if (queryTemplate.includes("{datasetId}")) {
+    return queryTemplate.replace("{datasetId}", datasetId);
+  }
   return `/resource/${datasetId}.json`;
 }
 
@@ -47,7 +51,13 @@ function valueFromRow(row: Record<string, unknown>, keys: string[]): string | nu
 export async function searchCtRegistry(filters: CtRegistryFilters) {
   const provider = await getProviderBySlug(PROVIDER_SLUGS.SOCRATA);
   const endpoints = (provider.endpoints ?? {}) as Record<string, unknown>;
-  const datasetId = typeof endpoints.dataset_id === "string" ? endpoints.dataset_id.trim() : "";
+  const rawDatasetId =
+    typeof endpoints.dataset_id === "string"
+      ? endpoints.dataset_id
+      : typeof endpoints.datasetId === "string"
+        ? endpoints.datasetId
+        : "";
+  const datasetId = rawDatasetId.trim();
   const appToken = await getProviderSecret(PROVIDER_SLUGS.SOCRATA);
 
   const effectiveLimit = Math.max(10, Math.min(filters.limit ?? 100, 500));
@@ -82,7 +92,7 @@ export async function searchCtRegistry(filters: CtRegistryFilters) {
 
   const response = await providerRequest<Record<string, unknown>[]>({
     slug: PROVIDER_SLUGS.SOCRATA,
-    endpointKey: shouldMock ? "query" : endpointWithDataset(datasetId),
+    endpointKey: shouldMock ? "query" : endpointWithDataset(endpoints, datasetId),
     forceMock: shouldMock,
     mockResponse: mockRegistryRows(filters),
     query: {
