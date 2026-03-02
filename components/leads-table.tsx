@@ -1,8 +1,8 @@
 "use client";
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { enrichAllVisibleWithGoogleAction, enrichSelectedWithGoogleAction } from "@/app/actions/leads";
 
 type LeadTableRow = {
   id: string;
@@ -17,7 +17,10 @@ type LeadTableRow = {
 };
 
 export function LeadsTable({ leads }: { leads: LeadTableRow[] }) {
+  const router = useRouter();
   const [selected, setSelected] = useState<string[]>([]);
+  const [enriching, setEnriching] = useState(false);
+  const [resultMessage, setResultMessage] = useState<string | null>(null);
   const selectedSet = useMemo(() => new Set(selected), [selected]);
   const selectAllRef = useRef<HTMLInputElement | null>(null);
 
@@ -51,38 +54,69 @@ export function LeadsTable({ leads }: { leads: LeadTableRow[] }) {
     setSelected(leads.map((lead) => lead.id));
   }
 
+  async function runEnrich(ids: string[], mode: "selected" | "all") {
+    if (!ids.length || enriching) return;
+
+    setEnriching(true);
+    setResultMessage(null);
+
+    try {
+      const response = await fetch("/api/leads/enrich", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ids }),
+      });
+
+      const body = (await response.json().catch(() => ({}))) as {
+        ok?: boolean;
+        error?: string;
+        updated?: number;
+        failed?: number;
+      };
+
+      if (!response.ok || !body.ok) {
+        setResultMessage(`Enrich failed: ${body.error ?? response.statusText}`);
+        return;
+      }
+
+      setResultMessage(`Enrich complete (${mode}). Updated: ${body.updated ?? 0}, Failed: ${body.failed ?? 0}.`);
+      if (mode === "selected") {
+        setSelected([]);
+      }
+      router.refresh();
+    } catch {
+      setResultMessage("Enrich failed due to a network error.");
+    } finally {
+      setEnriching(false);
+    }
+  }
+
   return (
     <div className="space-y-3 rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h2 className="font-semibold text-slate-900">Lead Results</h2>
         <div className="flex flex-wrap items-center gap-2">
-          <form action={enrichSelectedWithGoogleAction}>
-            {selected.map((id) => (
-              <input key={id} type="hidden" name="leadId" value={id} />
-            ))}
-            <button
-              type="submit"
-              disabled={!selected.length}
-              className="rounded-md bg-sky-700 px-3 py-1.5 text-sm font-medium text-white hover:bg-sky-600 disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              Enrich Selected ({selected.length})
-            </button>
-          </form>
+          <button
+            type="button"
+            onClick={() => void runEnrich(selected, "selected")}
+            disabled={enriching || !selected.length}
+            className="rounded-md bg-sky-700 px-3 py-1.5 text-sm font-medium text-white hover:bg-sky-600 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {enriching ? "Enriching..." : `Enrich Selected (${selected.length})`}
+          </button>
 
-          <form action={enrichAllVisibleWithGoogleAction}>
-            {leads.map((lead) => (
-              <input key={lead.id} type="hidden" name="leadId" value={lead.id} />
-            ))}
-            <button
-              type="submit"
-              disabled={!leads.length}
-              className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              Enrich All Filtered ({leads.length})
-            </button>
-          </form>
+          <button
+            type="button"
+            onClick={() => void runEnrich(leads.map((lead) => lead.id), "all")}
+            disabled={enriching || !leads.length}
+            className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {enriching ? "Enriching..." : `Enrich All Filtered (${leads.length})`}
+          </button>
         </div>
       </div>
+
+      {resultMessage ? <div className="text-sm text-slate-700">{resultMessage}</div> : null}
 
       <div className="overflow-x-auto">
         <table className="min-w-full text-sm">
